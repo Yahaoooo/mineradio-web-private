@@ -62,7 +62,7 @@ const QQ_COOKIE_FILE = process.env.QQ_COOKIE_FILE || path.join(__dirname, '.qq-c
 const UPDATE_WORK_DIR = process.env.MINERADIO_UPDATE_DIR || path.join(__dirname, 'updates');
 const UPDATE_DOWNLOAD_DIR = process.env.MINERADIO_UPDATE_DOWNLOAD_DIR || path.join(UPDATE_WORK_DIR, 'downloads');
 const UPDATE_PATCH_BACKUP_DIR = process.env.MINERADIO_PATCH_BACKUP_DIR || path.join(UPDATE_WORK_DIR, 'backups', 'patches');
-const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || 'D:\\MineradioCache\\beatmaps';
+const BEATMAP_CACHE_DIR = process.env.MINERADIO_BEAT_CACHE_DIR || path.join(__dirname, 'data', 'beatmaps');
 const APP_PACKAGE = readPackageInfo();
 const APP_VERSION = process.env.MINERADIO_VERSION || APP_PACKAGE.version || '0.9.11';
 const UPDATE_CONFIG = readUpdateConfig(APP_PACKAGE);
@@ -184,6 +184,193 @@ catch (e) { qqCookie = ''; }
 function saveQQCookie(c) {
   qqCookie = normalizeCookieHeader(c) || rawCookieFallback(c);
   try { fs.writeFileSync(QQ_COOKIE_FILE, qqCookie); } catch (e) {}
+}
+
+// ---------- 私人网页版访问保护 ----------
+function readPrivateWebConfig() {
+  const candidates = [
+    process.env.MINERADIO_WEB_CONFIG,
+    path.join(__dirname, 'private-web.config.json'),
+  ].filter(Boolean);
+  for (const file of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const raw = fs.readFileSync(file, 'utf8');
+      return JSON.parse(raw);
+    } catch (e) {
+      console.warn('[PrivateWeb] config skipped:', e.message);
+    }
+  }
+  return {};
+}
+const PRIVATE_WEB_CONFIG = readPrivateWebConfig();
+const WEB_AUTH_DISABLED = String(process.env.MINERADIO_WEB_AUTH || PRIVATE_WEB_CONFIG.enabled || '').toLowerCase() === 'false'
+  || String(process.env.MINERADIO_WEB_AUTH || '').trim() === '0';
+const WEB_AUTH_PASSWORD = String(process.env.MINERADIO_WEB_PASSWORD || PRIVATE_WEB_CONFIG.password || '').trim();
+const WEB_AUTH_ENABLED = !WEB_AUTH_DISABLED && !!WEB_AUTH_PASSWORD;
+const WEB_AUTH_COOKIE = 'mineradio_web_session';
+const WEB_AUTH_MAX_AGE_SECONDS = Math.max(3600, Number(process.env.MINERADIO_WEB_SESSION_MAX_AGE || PRIVATE_WEB_CONFIG.sessionMaxAgeSeconds || (7 * 24 * 3600)) || (7 * 24 * 3600));
+const WEB_AUTH_SECRET = String(process.env.MINERADIO_WEB_SESSION_SECRET || PRIVATE_WEB_CONFIG.sessionSecret || crypto.createHash('sha256').update('mineradio-private-web|' + WEB_AUTH_PASSWORD + '|' + APP_VERSION).digest('hex'));
+
+function parseCookieHeader(header) {
+  const obj = {};
+  String(header || '').split(';').forEach(part => {
+    const raw = String(part || '').trim();
+    if (!raw) return;
+    const idx = raw.indexOf('=');
+    if (idx <= 0) return;
+    const key = decodeURIComponent(raw.slice(0, idx).trim());
+    const value = decodeURIComponent(raw.slice(idx + 1).trim());
+    obj[key] = value;
+  });
+  return obj;
+}
+function safeEqualString(a, b) {
+  const left = Buffer.from(String(a || ''));
+  const right = Buffer.from(String(b || ''));
+  if (left.length !== right.length) return false;
+  try { return crypto.timingSafeEqual(left, right); }
+  catch (e) { return false; }
+}
+function signWebSession(payload) {
+  return crypto.createHmac('sha256', WEB_AUTH_SECRET).update(payload).digest('base64url');
+}
+function createWebSessionToken() {
+  const exp = Date.now() + WEB_AUTH_MAX_AGE_SECONDS * 1000;
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const payload = Buffer.from(JSON.stringify({ exp, nonce, v: 1 })).toString('base64url');
+  return payload + '.' + signWebSession(payload);
+}
+function verifyWebSessionToken(token) {
+  const raw = String(token || '');
+  const parts = raw.split('.');
+  if (parts.length !== 2) return false;
+  const [payload, sig] = parts;
+  if (!safeEqualString(signWebSession(payload), sig)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return Number(data.exp || 0) > Date.now();
+  } catch (e) {
+    return false;
+  }
+}
+function isWebAuthenticated(req) {
+  if (!WEB_AUTH_ENABLED) return true;
+  const cookies = parseCookieHeader(req.headers.cookie || '');
+  return verifyWebSessionToken(cookies[WEB_AUTH_COOKIE]);
+}
+function setWebAuthCookie(res) {
+  const token = createWebSessionToken();
+  const secure = String(process.env.MINERADIO_WEB_COOKIE_SECURE || PRIVATE_WEB_CONFIG.cookieSecure || '').toLowerCase() === 'true';
+  const parts = [
+    `${WEB_AUTH_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${WEB_AUTH_MAX_AGE_SECONDS}`,
+  ];
+  if (secure) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+function clearWebAuthCookie(res) {
+  res.setHeader('Set-Cookie', `${WEB_AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+}
+function isPublicWebAuthPath(pathname) {
+  return pathname === '/login'
+    || pathname === '/web-login'
+    || pathname === '/api/web-auth/status'
+    || pathname === '/api/web-auth/login'
+    || pathname === '/api/web-auth/logout'
+    || pathname === '/favicon.ico';
+}
+function sendNoCacheHtml(res, html, status) {
+  res.writeHead(status || 200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0',
+  });
+  res.end(html);
+}
+function sendWebLoginPage(res) {
+  sendNoCacheHtml(res, `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mineradio 私人访问</title>
+<style>
+:root{color-scheme:dark;--bg:#071018;--card:rgba(16,28,38,.72);--line:rgba(255,255,255,.12);--text:#eaf8ff;--muted:rgba(234,248,255,.62);--accent:#6ee7ff;--danger:#ff6173}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 18% 16%,rgba(110,231,255,.20),transparent 34%),radial-gradient(circle at 82% 76%,rgba(255,83,103,.16),transparent 32%),linear-gradient(135deg,#071018,#0d1722 48%,#05080d);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--text)}
+.card{width:min(420px,calc(100vw - 36px));padding:30px;border:1px solid var(--line);border-radius:28px;background:var(--card);box-shadow:0 30px 90px rgba(0,0,0,.42);backdrop-filter:blur(22px)}
+.logo{width:54px;height:54px;border-radius:18px;background:linear-gradient(135deg,rgba(110,231,255,.95),rgba(255,83,103,.88));box-shadow:0 18px 45px rgba(110,231,255,.16);margin-bottom:18px}
+h1{font-size:26px;margin:0 0 8px;letter-spacing:.02em}.sub{margin:0 0 22px;color:var(--muted);line-height:1.65;font-size:14px}.field{display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:16px;background:rgba(0,0,0,.22)}
+input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-size:16px}input::placeholder{color:rgba(234,248,255,.36)}
+button{width:100%;margin-top:14px;border:0;border-radius:16px;height:48px;cursor:pointer;background:linear-gradient(135deg,#70e8ff,#ff6074);color:#061018;font-weight:800;font-size:15px;letter-spacing:.08em}button:disabled{opacity:.6;cursor:not-allowed}.msg{min-height:22px;margin-top:14px;color:var(--danger);font-size:13px}.tip{margin-top:18px;color:rgba(234,248,255,.44);font-size:12px;line-height:1.6}
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo" aria-hidden="true"></div>
+    <h1>私人访问验证</h1>
+    <p class="sub">输入你在 <code>private-web.config.json</code> 或环境变量里设置的访问密码，然后进入网页版播放器。</p>
+    <form id="login-form">
+      <label class="field"><input id="password" type="password" autocomplete="current-password" placeholder="访问密码" autofocus /></label>
+      <button id="submit" type="submit">进入播放器</button>
+      <div id="msg" class="msg" role="status"></div>
+    </form>
+    <div class="tip">公网部署建议绑定域名并开启 HTTPS；不要把访问密码发到公开群里。</div>
+  </main>
+<script>
+const form=document.getElementById('login-form');const input=document.getElementById('password');const msg=document.getElementById('msg');const btn=document.getElementById('submit');
+const next=new URLSearchParams(location.search).get('next')||'/';
+form.addEventListener('submit',async(e)=>{e.preventDefault();msg.textContent='';btn.disabled=true;try{const r=await fetch('/api/web-auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:input.value})});const data=await r.json().catch(()=>({}));if(!r.ok||!data.ok){msg.textContent=data.message||'密码不正确';btn.disabled=false;input.select();return;}location.replace(next.startsWith('/')?next:'/');}catch(err){msg.textContent='登录失败：'+(err&&err.message||err);btn.disabled=false;}});
+</script>
+</body>
+</html>`);
+}
+async function handleWebAuthRequest(req, res, url) {
+  const pn = url.pathname;
+  if (pn === '/login' || pn === '/web-login') {
+    sendWebLoginPage(res);
+    return true;
+  }
+  if (pn === '/api/web-auth/status') {
+    sendJSON(res, { ok: true, enabled: WEB_AUTH_ENABLED, authenticated: isWebAuthenticated(req), sessionMaxAgeSeconds: WEB_AUTH_MAX_AGE_SECONDS });
+    return true;
+  }
+  if (pn === '/api/web-auth/logout') {
+    clearWebAuthCookie(res);
+    sendJSON(res, { ok: true, authenticated: false });
+    return true;
+  }
+  if (pn === '/api/web-auth/login') {
+    if (req.method !== 'POST') {
+      sendJSON(res, { ok: false, message: 'METHOD_NOT_ALLOWED' }, 405);
+      return true;
+    }
+    const body = await readRequestBody(req);
+    const password = String(body.password || '').trim();
+    if (!WEB_AUTH_ENABLED || safeEqualString(password, WEB_AUTH_PASSWORD)) {
+      setWebAuthCookie(res);
+      sendJSON(res, { ok: true, authenticated: true, sessionMaxAgeSeconds: WEB_AUTH_MAX_AGE_SECONDS });
+    } else {
+      sendJSON(res, { ok: false, message: '访问密码不正确' }, 401);
+    }
+    return true;
+  }
+  return false;
+}
+function rejectUnauthenticatedWebRequest(req, res, url) {
+  if (!WEB_AUTH_ENABLED || isWebAuthenticated(req) || isPublicWebAuthPath(url.pathname)) return false;
+  if (url.pathname.startsWith('/api/')) {
+    sendJSON(res, { ok: false, error: 'UNAUTHORIZED', message: '请先输入私人访问密码' }, 401);
+    return true;
+  }
+  const next = encodeURIComponent(req.url || '/');
+  res.writeHead(302, { Location: '/login?next=' + next, 'Cache-Control': 'no-store' });
+  res.end();
+  return true;
 }
 
 // ---------- 工具 ----------
@@ -508,6 +695,8 @@ function beatCacheRootInfo() {
   const dir = path.resolve(BEATMAP_CACHE_DIR);
   const root = path.parse(dir).root;
   const drive = root ? root.replace(/[\\\/]+$/, '').toUpperCase() : '';
+  // 桌面版曾默认禁止写入 C 盘；网页版部署在 Linux/Windows 服务器时，
+  // 只继续拦截 Windows 的 C: 根盘，Linux 的 /、Docker 挂载目录均允许。
   const allowed = !!root && !/^C:$/i.test(drive);
   const available = allowed && fs.existsSync(root);
   return { dir, root, drive, allowed, available };
@@ -3244,6 +3433,20 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost:' + PORT);
   const pn = url.pathname;
 
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,Range',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
+  if (await handleWebAuthRequest(req, res, url)) return;
+  if (rejectUnauthenticatedWebRequest(req, res, url)) return;
+
   if (pn === '/api/app/version') {
     sendJSON(res, {
       name: APP_PACKAGE.name || 'mineradio',
@@ -4195,8 +4398,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log('======================================================');
-  console.log(' 粒子音乐可视化 v2  →  http://localhost:' + PORT);
-  console.log(' 登录态: ' + (userCookie ? '已登录(cookie已加载)' : '未登录'));
+  console.log(' Mineradio 私人网页版  →  http://localhost:' + PORT);
+  console.log(' 访问保护: ' + (WEB_AUTH_ENABLED ? '已开启' : '未开启，建议设置 MINERADIO_WEB_PASSWORD'));
+  console.log(' 登录态: ' + (userCookie ? '网易云已登录(cookie已加载)' : '网易云未登录'));
   console.log('======================================================');
 });
 

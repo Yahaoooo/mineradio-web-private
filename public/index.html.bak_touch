@@ -95,16 +95,8 @@ body.custom-background-video #custom-bg::before{opacity:0!important}
 #album-bg.visible{opacity:1}
 body.custom-background-override #album-bg{opacity:0!important}
 #canvas-container{position:fixed;inset:0;z-index:1;transition:opacity 1450ms cubic-bezier(.16,1,.3,1),transform 1450ms cubic-bezier(.16,1,.3,1)}
-#canvas-container canvas{display:block;width:100%!important;height:100%!important;touch-action:none;-ms-touch-action:none;-webkit-user-select:none;user-select:none}
+#canvas-container canvas{display:block;width:100%!important;height:100%!important}
 #canvas-container:focus,#canvas-container:focus-visible,#canvas-container canvas:focus,#canvas-container canvas:focus-visible,html:focus,html:focus-visible,body:focus,body:focus-visible{outline:none!important;box-shadow:none!important}
-@media (pointer:coarse){
-  #playlist-panel,#fx-panel,#search-results,.modal-card,.login-panel{
-    -webkit-overflow-scrolling:touch;
-    overscroll-behavior:contain;
-    touch-action:pan-y;
-  }
-}
-
 #canvas-container canvas{outline:none!important;border:0!important}
 body.render-deep-sleep #canvas-container,body.render-deep-sleep #idle-guide-canvas,body.render-deep-sleep #splash-canvas,body.render-deep-sleep #hand-canvas{opacity:0!important;visibility:hidden!important}
 body.splash-active:not(.splash-revealing) #canvas-container{opacity:.16;transform:scale(1)}
@@ -1044,10 +1036,6 @@ body.login-guide-active #login-guide-canvas{opacity:1}
 /* ============================================================ */
 #fx-panel{position:fixed;z-index:18;right:-460px;bottom:92px;width:min(444px,calc(100vw - 48px));max-height:min(650px,calc(100vh - 132px));overflow:auto;overscroll-behavior:contain;background:var(--glass-bg);border:1px solid rgba(0,245,212,0.16);border-radius:20px;padding:18px 18px 20px;backdrop-filter:blur(44px) saturate(1.34);-webkit-backdrop-filter:blur(44px) saturate(1.34);box-shadow:var(--glass-shadow);opacity:0;transition:right .55s cubic-bezier(.16,1,.3,1),opacity .45s cubic-bezier(.16,1,.3,1),transform .55s cubic-bezier(.16,1,.3,1);pointer-events:none;transform:translateY(18px) scale(.97);scrollbar-width:thin;scrollbar-color:rgba(0,245,212,.22) transparent}
 #fx-panel.show, #fx-panel.peek{right:24px;opacity:1;pointer-events:auto;transform:translateY(0)}
-#fx-panel .fx-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-#fx-panel .fx-close-btn{width:34px;height:34px;border-radius:13px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.065);color:rgba(255,255,255,.82);font-size:24px;line-height:30px;font-weight:300;cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto;transition:transform .18s,background .18s,border-color .18s,color .18s;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-#fx-panel .fx-close-btn:hover,#fx-panel .fx-close-btn:active{transform:scale(1.04);background:rgba(var(--fc-accent-rgb),.12);border-color:rgba(var(--fc-accent-rgb),.46);color:#fff}
-@media (max-width:860px){#fx-panel .fx-close-btn{width:38px;height:38px;border-radius:14px;font-size:26px;line-height:34px}.fx-sub{max-width:260px}}
 #fx-panel.show{animation:fx-panel-in .56s cubic-bezier(.16,1,.3,1)}
 #fx-panel.closing{animation:fx-panel-out .26s cubic-bezier(.5,0,.7,1)}
 #fx-panel::-webkit-scrollbar{width:3px}
@@ -2037,8 +2025,7 @@ html.control-glass-svg-ok #visual-guide-btn:hover{
 <!-- 控制台 (右侧贴边自动显示, 无关闭按钮) -->
 <div id="fx-panel">
   <div class="fx-head">
-    <div><div class="fx-title">视觉控制台</div><div class="fx-sub">MINERADIO VISUALS · 桌面鼠标移开自动隐藏，移动端点 × 收起</div></div>
-    <button class="fx-close-btn" type="button" onclick="closeFxPanelFromButton(event)" title="关闭视觉控制台" aria-label="关闭视觉控制台">×</button>
+    <div><div class="fx-title">视觉控制台</div><div class="fx-sub">MINERADIO VISUALS · 鼠标移开自动隐藏</div></div>
   </div>
 
   <div class="fx-section-label">视觉预设</div>
@@ -3832,8 +3819,6 @@ renderer.domElement.style.background = 'transparent';
 renderer.domElement.style.display = 'block';
 renderer.domElement.style.width = '100%';
 renderer.domElement.style.height = '100%';
-renderer.domElement.style.touchAction = 'none';
-renderer.domElement.style.msTouchAction = 'none';
 renderer.domElement.tabIndex = 0;
 document.getElementById('canvas-container').appendChild(renderer.domElement);
 
@@ -5711,197 +5696,6 @@ renderer.domElement.addEventListener('wheel', function(e){
   orbit.userRadius = Math.max(orbit.minRadius, Math.min(orbit.maxRadius, orbit.userRadius + e.deltaY * 0.005));
   if (orbit.recentering) orbit.recentering = false;
 }, { passive:false });
-
-// ============================================================
-//  移动端触控适配
-//   - 单指拖动: 转动视觉/粒子
-//   - 双指捏合: 缩放视角, 等价鼠标滚轮
-//   - 歌单架/详情列表: 滑动切换/滚动
-// ============================================================
-var mobileTouchState = { active:false, mode:'none', lastX:0, lastY:0, startX:0, startY:0, moved:false, lastTapAt:0, pinch:false, pinchDistance:0, shelfAccumX:0, shelfAccumY:0 };
-function touchPointFromEvent(e, index) {
-  if (!e || !e.touches || !e.touches.length) return null;
-  return e.touches[Math.min(index || 0, e.touches.length - 1)];
-}
-function makeTouchPointerEvent(touch, src) {
-  return {
-    button: 0,
-    clientX: touch.clientX,
-    clientY: touch.clientY,
-    target: (src && src.target) || renderer.domElement,
-    shiftKey: false,
-    preventDefault: function(){ if (src && src.cancelable) src.preventDefault(); },
-    stopPropagation: function(){ if (src && src.stopPropagation) src.stopPropagation(); },
-    stopImmediatePropagation: function(){ if (src && src.stopImmediatePropagation) src.stopImmediatePropagation(); }
-  };
-}
-function touchDistance(a, b) {
-  var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-function shouldTouchUseShelf(touch) {
-  if (!shelfManager || !shelfManager.getMode || shelfManager.getMode() === 'off') return false;
-  if (!shelfManager.canInteract || !shelfManager.canInteract()) return false;
-  var ev = makeTouchPointerEvent(touch);
-  if (isPointerOverUi(ev)) return false;
-  if (shelfManager.hasOpenContent && shelfManager.hasOpenContent()) {
-    var cl = shelfManager.getContentList && shelfManager.getContentList();
-    if (cl) {
-      var rc = raycasterFromPointerEvent(ev);
-      if ((cl.raycastRows && cl.raycastRows(rc)) || (cl.raycastPanel && cl.raycastPanel(rc)) || (cl.screenContainsPanel && cl.screenContainsPanel(touch.clientX, touch.clientY))) return true;
-    }
-  }
-  var rc2 = raycasterFromPointerEvent(ev);
-  return !!pointerCardHit(rc2, ev, 26) || isSideShelfFocusHit(ev);
-}
-function applyMobileWheelDelta(deltaY, x, y) {
-  var ev = { clientX:x || innerWidth/2, clientY:y || innerHeight/2, deltaY:deltaY, shiftKey:false, button:0, target:renderer.domElement, preventDefault:function(){}, stopPropagation:function(){}, stopImmediatePropagation:function(){} };
-  markRenderInteraction('touch-pinch', 900);
-  if (freeCamera && freeCamera.active) {
-    freeCamera.fov = clampRange((freeCamera.fov || BASE_FOV) + deltaY * 0.018, 26, 72);
-    saveFreeCameraState();
-    return;
-  }
-  if (fx && fx.preset === SKULL_PRESET_INDEX && typeof skullWheelZoomTarget !== 'undefined') {
-    skullWheelZoomTarget = clampRange(skullWheelZoomTarget + deltaY * 0.00155, -0.95, 1.28);
-    return;
-  }
-  idleGuideWheel(ev);
-  unlockCenteredView();
-  orbit.userRadius = Math.max(orbit.minRadius, Math.min(orbit.maxRadius, orbit.userRadius + deltaY * 0.005));
-  if (orbit.recentering) orbit.recentering = false;
-}
-function applyMobileShelfSwipe(dx, dy, touch) {
-  if (!shelfManager || !shelfManager.getMode || shelfManager.getMode() === 'off') return false;
-  mobileTouchState.shelfAccumX += dx;
-  mobileTouchState.shelfAccumY += dy;
-  var thresholdX = 42;
-  var thresholdY = 36;
-  if (shelfManager.hasOpenContent && shelfManager.hasOpenContent()) {
-    var cl = shelfManager.getContentList && shelfManager.getContentList();
-    if (cl && Math.abs(mobileTouchState.shelfAccumY) >= thresholdY) {
-      // 手指上滑 = 内容向下翻一行; 手指下滑 = 内容向上翻一行
-      cl.scrollBy(mobileTouchState.shelfAccumY < 0 ? 1 : -1);
-      mobileTouchState.shelfAccumY = 0;
-      return true;
-    }
-  }
-  if (Math.abs(mobileTouchState.shelfAccumX) >= thresholdX || Math.abs(mobileTouchState.shelfAccumY) >= thresholdY * 1.25) {
-    if (Math.abs(mobileTouchState.shelfAccumX) >= Math.abs(mobileTouchState.shelfAccumY)) {
-      shelfManager.scrollBy(mobileTouchState.shelfAccumX < 0 ? 1 : -1);
-      mobileTouchState.shelfAccumX = 0;
-    } else {
-      shelfManager.scrollBy(mobileTouchState.shelfAccumY < 0 ? 1 : -1);
-      mobileTouchState.shelfAccumY = 0;
-    }
-    return true;
-  }
-  return false;
-}
-function mobileTouchStart(e) {
-  if (!e || !e.touches || !e.touches.length) return;
-  if (e.touches.length >= 2) {
-    var a = e.touches[0], b = e.touches[1];
-    mobileTouchState.active = true;
-    mobileTouchState.mode = 'pinch';
-    mobileTouchState.pinch = true;
-    mobileTouchState.pinchDistance = touchDistance(a, b);
-    mobileTouchState.lastX = (a.clientX + b.clientX) / 2;
-    mobileTouchState.lastY = (a.clientY + b.clientY) / 2;
-    e.preventDefault();
-    return;
-  }
-  var t = touchPointFromEvent(e, 0);
-  if (!t) return;
-  var ev = makeTouchPointerEvent(t, e);
-  if (isPointerOverUi(ev)) return;
-  e.preventDefault();
-  mobileTouchState.active = true;
-  mobileTouchState.pinch = false;
-  mobileTouchState.mode = shouldTouchUseShelf(t) ? 'shelf' : 'orbit';
-  mobileTouchState.startX = mobileTouchState.lastX = t.clientX;
-  mobileTouchState.startY = mobileTouchState.lastY = t.clientY;
-  mobileTouchState.shelfAccumX = 0;
-  mobileTouchState.shelfAccumY = 0;
-  mobileTouchState.moved = false;
-  if (mobileTouchState.mode === 'orbit') beginParticlePointerDrag(ev);
-}
-function mobileTouchMove(e) {
-  if (!mobileTouchState.active) return;
-  if (e.touches && e.touches.length >= 2) {
-    var a = e.touches[0], b = e.touches[1];
-    var dist = touchDistance(a, b);
-    if (mobileTouchState.pinchDistance) {
-      var diff = dist - mobileTouchState.pinchDistance;
-      if (Math.abs(diff) > 0.5) applyMobileWheelDelta(-diff * 1.55, (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
-    }
-    mobileTouchState.mode = 'pinch';
-    mobileTouchState.pinch = true;
-    mobileTouchState.pinchDistance = dist;
-    e.preventDefault();
-    return;
-  }
-  var t = touchPointFromEvent(e, 0);
-  if (!t) return;
-  e.preventDefault();
-  var x = t.clientX, y = t.clientY;
-  var dx = x - mobileTouchState.lastX, dy = y - mobileTouchState.lastY;
-  if (Math.sqrt(Math.pow(x - mobileTouchState.startX, 2) + Math.pow(y - mobileTouchState.startY, 2)) > CLICK_THRESHOLD) mobileTouchState.moved = true;
-  if (mobileTouchState.mode === 'shelf') {
-    applyMobileShelfSwipe(dx, dy, t);
-    markRenderInteraction('touch-shelf', 900);
-  } else {
-    var ev = makeTouchPointerEvent(t, e);
-    updateControlsAutoHideFromPointer(x, y);
-    idleGuidePointerMove(ev);
-    if (orbit.rotating) {
-      markRenderInteraction('touch-drag', 900);
-      unlockCenteredView();
-      if (particlePointerSpin.active) {
-        var nowSpin = performance.now();
-        var spinDt = Math.max(1 / 120, Math.min(0.08, (nowSpin - particlePointerSpin.lastT) / 1000 || 1 / 60));
-        applyParticleSpinDrag(dx, dy, spinDt);
-        particlePointerSpin.lastX = x;
-        particlePointerSpin.lastY = y;
-        particlePointerSpin.lastT = nowSpin;
-      }
-      orbit.last.x = x;
-      orbit.last.y = y;
-      if (orbit.recentering) orbit.recentering = false;
-    }
-    queueParticlePointerFrame(x, y);
-  }
-  mobileTouchState.lastX = x;
-  mobileTouchState.lastY = y;
-}
-function mobileTouchEnd(e) {
-  var now = performance.now();
-  if (mobileTouchState.active && mobileTouchState.mode === 'orbit') {
-    orbit.rotating = false;
-    particlePointerSpin.active = false;
-    idleGuidePointerUp();
-  }
-  if (mobileTouchState.active && !mobileTouchState.moved && !mobileTouchState.pinch) {
-    // 双击触屏回正
-    if (now - mobileTouchState.lastTapAt < 320) {
-      var ev = { clientX: mobileTouchState.lastX, clientY: mobileTouchState.lastY, button:0, target:renderer.domElement };
-      if (!isPointerOverUi(ev)) {
-        if (freeCamera && freeCamera.locked) resetFreeCameraToDefault();
-        else recenterCamera();
-      }
-      mobileTouchState.lastTapAt = 0;
-    } else {
-      mobileTouchState.lastTapAt = now;
-    }
-  }
-  mobileTouchState.active = false;
-  mobileTouchState.mode = 'none';
-  mobileTouchState.pinch = false;
-}
-renderer.domElement.addEventListener('touchstart', mobileTouchStart, { passive:false });
-renderer.domElement.addEventListener('touchmove', mobileTouchMove, { passive:false });
-renderer.domElement.addEventListener('touchend', mobileTouchEnd, { passive:false });
-renderer.domElement.addEventListener('touchcancel', mobileTouchEnd, { passive:false });
 
 // 双击屏幕回正 — 不命中卡片时
 renderer.domElement.addEventListener('dblclick', function(e){
@@ -22685,30 +22479,6 @@ function toggleFxPanel(force) {
   el.classList.remove('show', 'closing');
   setPeek(el, true, 'fx');
 }
-
-function closeFxPanelFromButton(e) {
-  if (e) {
-    if (e.preventDefault) e.preventDefault();
-    if (e.stopPropagation) e.stopPropagation();
-  }
-  toggleFxPanel(false);
-  showToast('视觉控制台已收起');
-}
-function isCoarsePointerDevice() {
-  try { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); } catch (e) { return ('ontouchstart' in window); }
-}
-function shouldKeepFxPanelForTouchTarget(target) {
-  if (!target || !target.closest) return false;
-  return !!target.closest('#fx-panel,#fx-fab,#fx-fab-hide-btn,#web-diy-mode-btn,#fullscreen-diy-btn,#diy-mode-btn,.cover-color-pop,.color-lab-pop,.volume-popover,.quality-popover,.mini-queue-popover,.modal-mask,.modal,.track-detail-modal,#toast');
-}
-document.addEventListener('touchstart', function(e) {
-  if (!isCoarsePointerDevice()) return;
-  if (!diyPlayerMode || immersiveMode) return;
-  var panel = document.getElementById('fx-panel');
-  if (!panel || !(panel.classList.contains('peek') || panel.classList.contains('show'))) return;
-  if (shouldKeepFxPanelForTouchTarget(e.target)) return;
-  toggleFxPanel(false);
-}, { passive: true });
 function resetFx() {
   var savedCam = fx.cam;
   var savedShelf = fx.shelf;

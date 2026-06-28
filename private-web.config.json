@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "password": "自己设置密码",
+  "sessionMaxAgeSeconds": 604800,
+  "cookieSecure": false
+}
